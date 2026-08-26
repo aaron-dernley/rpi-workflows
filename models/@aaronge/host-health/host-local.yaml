@@ -1,0 +1,8 @@
+type: '@aaronge/host-health'
+typeVersion: 2026.08.26.3
+id: f019482c-4f1b-4db5-864d-8c34ec8d3366
+name: host-local
+version: 1
+tags: {}
+globalArguments: {}
+methods: {}

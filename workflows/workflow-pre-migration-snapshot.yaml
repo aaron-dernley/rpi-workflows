@@ -1,0 +1,87 @@
+id: 2f106fd1-47e6-4c89-9f18-fd0c944be3b6
+name: pre-migration-snapshot
+description: >-
+  One versioned record of a known-good system: @aaronge/rpi-boot-config's
+  eeprom/configTxt/cmdline, @aaronge/host-health's filesystems,
+  @aaronge/rpi-health's firmware status, and @aaronge/apt-inventory's
+  installed packages. Run manually right before the NVMe SSD migration,
+  then run again after and diff the two versions (data.version("bootconfig-local",
+  "cmdline", N) etc.) — Swamp versions every write, so the diff is free as
+  long as the raw text fields are stored verbatim, which they are. Not
+  scheduled: this is a deliberate before/after snapshot pair around one
+  specific event, not a recurring check — run with `swamp workflow run
+  pre-migration-snapshot` by hand.
+version: 1
+tags: {}
+jobs:
+  - name: collect
+    description: >-
+      Snapshot boot config, filesystems, firmware status, and installed
+      packages in parallel.
+    dependsOn: []
+    steps:
+      - name: readEeprom
+        task:
+          type: model_method
+          modelIdOrName: bootconfig-local
+          methodName: readEeprom
+        dependsOn: []
+      - name: readConfigTxt
+        task:
+          type: model_method
+          modelIdOrName: bootconfig-local
+          methodName: readConfigTxt
+        dependsOn: []
+      - name: readCmdline
+        task:
+          type: model_method
+          modelIdOrName: bootconfig-local
+          methodName: readCmdline
+        dependsOn: []
+      - name: readFilesystems
+        task:
+          type: model_method
+          modelIdOrName: host-local
+          methodName: readFilesystems
+        dependsOn: []
+      - name: readFirmware
+        task:
+          type: model_method
+          modelIdOrName: health-local
+          methodName: readFirmware
+        dependsOn: []
+      - name: query
+        task:
+          type: model_method
+          modelIdOrName: apt-local
+          methodName: query
+        dependsOn: []
+
+  - name: report
+    description: >-
+      Print the fields worth eyeballing before trusting this as the
+      known-good snapshot, and the exact commands to diff against it later.
+    dependsOn:
+      - job: collect
+        condition:
+          type: completed
+    steps:
+      - name: summarize
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: pre-migration-snapshot-summary
+          methodName: execute
+          inputs:
+            run: >-
+              echo "pre-migration-snapshot" &&
+              echo "  BOOT_ORDER: ${{ data.latest('bootconfig-local', 'eeprom').attributes.bootOrderRaw }} -> ${{ data.latest('bootconfig-local', 'eeprom').attributes.bootOrderDecoded }}" &&
+              echo "  cmdline root=: ${{ data.latest('bootconfig-local', 'cmdline').attributes.rootParam }}" &&
+              echo "  root filesystem used: ${{ data.latest('host-local', 'filesystems').attributes.rootUsedPercent }}%" &&
+              echo "  EEPROM up to date: ${{ data.latest('health-local', 'firmware').attributes.eepromUpToDate }}" &&
+              echo "  installed packages: ${{ data.latest('apt-local', 'installed').attributes.count }}" &&
+              echo "" &&
+              echo "To diff against this snapshot after the migration, note each data name's" &&
+              echo "current version now (swamp data list bootconfig-local, etc.), re-run this" &&
+              echo "workflow, then compare via data.version(\"<model>\", \"<name>\", <old-version>)."
+        dependsOn: []
