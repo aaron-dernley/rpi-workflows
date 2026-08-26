@@ -91,6 +91,55 @@ the migration.
 swamp workflow run pre-migration-snapshot
 ```
 
+## Scheduling
+
+`thermal-integrity`, `power-integrity`, and `link-integrity` are inert
+without a `swamp serve` process running against this repo — a workflow's
+`trigger.schedule` is only registered at server startup, not evaluated
+standalone. Running as a systemd service, `127.0.0.1:9093` only (no
+network exposure needed for a local schedule):
+
+```
+# /etc/systemd/system/swamp-serve-rpi-workflows.service
+[Unit]
+Description=swamp serve (rpi-workflows)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aaronge
+Group=aaronge
+Environment=HOME=/home/aaronge
+WorkingDirectory=/home/aaronge/Repositories/rpi-workflows
+ExecStart=/usr/local/bin/swamp serve --repo-dir /home/aaronge/Repositories/rpi-workflows --port 9093
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`systemctl enable --now swamp-serve-rpi-workflows.service`. Verified via
+`journalctl -u swamp-serve-rpi-workflows.service`: all 3 scheduled
+workflows registered (`Scheduled execution service started with 3
+schedules`) and `pre-migration-snapshot` correctly absent from that count
+(it has no `trigger.schedule` — manual-only, as intended).
+
+**`rpi-cooling` and `rpi-pcie` are deliberately not served on their own**
+— their own scheduled checks (`stalled`, `linkDegraded`) are fully
+subsumed by `thermal-integrity`/`link-integrity` here, which read the same
+underlying data. Running both would just be two processes polling
+identical `vcgencmd`/sysfs calls for equivalent checks. The rest of the
+family (`rpi-boot-config`, `rpi-connect`, `rpi-gpio-inventory`,
+`rpi-camera`) each run their own `swamp-serve-<repo>.service` on ports
+9094-9097 respectively, since none of their scheduled content overlaps
+with what this repo covers.
+
+Port map on this machine: `apt-inventory` 9090 · `host-health` 9091 ·
+`rpi-health` 9092 · `rpi-workflows` 9093 · `rpi-boot-config` 9094 ·
+`rpi-connect` 9095 · `rpi-gpio-inventory` 9096 · `rpi-camera` 9097.
+
 ## License
 
 MIT — see LICENSE for details.
