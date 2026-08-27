@@ -93,52 +93,69 @@ swamp workflow run pre-migration-snapshot
 
 ## Scheduling
 
-`thermal-integrity`, `power-integrity`, and `link-integrity` are inert
-without a `swamp serve` process running against this repo — a workflow's
-`trigger.schedule` is only registered at server startup, not evaluated
-standalone. Running as a systemd service, `127.0.0.1:9093` only (no
-network exposure needed for a local schedule):
+`thermal-integrity`, `power-integrity`, and `link-integrity` are inert on
+their own — a workflow's `trigger.schedule` is just a declaration; it only
+does something once *some* process actually reads and acts on it.
+
+**This repo does not run a persistent `swamp serve` daemon.** An earlier
+version of this setup did (one `swamp serve` process per repo across the
+whole family, each holding its port open 24/7) — measured at ~400MB
+resident per idle daemon, ~3GB combined across 8 repos on this 8GB Pi,
+with swap already 65% utilized. Reverted the same day in favor of
+`systemd.timer` + oneshot `swamp workflow run`, which costs ~0MB between
+runs since each invocation is a plain process that starts, runs the
+workflow (a couple of seconds), and exits:
 
 ```
-# /etc/systemd/system/swamp-serve-rpi-workflows.service
+# /etc/systemd/system/swamp-workflow-rpi-workflows-thermal-integrity.service
 [Unit]
-Description=swamp serve (rpi-workflows)
-After=network-online.target
-Wants=network-online.target
+Description=swamp workflow run thermal-integrity (rpi-workflows)
 
 [Service]
-Type=simple
+Type=oneshot
 User=aaronge
 Group=aaronge
 Environment=HOME=/home/aaronge
 WorkingDirectory=/home/aaronge/Repositories/rpi-workflows
-ExecStart=/usr/local/bin/swamp serve --repo-dir /home/aaronge/Repositories/rpi-workflows --port 9093
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
+ExecStart=/usr/local/bin/swamp workflow run thermal-integrity --repo-dir /home/aaronge/Repositories/rpi-workflows
 ```
 
-`systemctl enable --now swamp-serve-rpi-workflows.service`. Verified via
-`journalctl -u swamp-serve-rpi-workflows.service`: all 3 scheduled
-workflows registered (`Scheduled execution service started with 3
-schedules`) and `pre-migration-snapshot` correctly absent from that count
-(it has no `trigger.schedule` — manual-only, as intended).
+```
+# /etc/systemd/system/swamp-workflow-rpi-workflows-thermal-integrity.timer
+[Unit]
+Description=Timer for swamp workflow run thermal-integrity (rpi-workflows)
 
-**`rpi-cooling` and `rpi-pcie` are deliberately not served on their own**
-— their own scheduled checks (`stalled`, `linkDegraded`) are fully
-subsumed by `thermal-integrity`/`link-integrity` here, which read the same
-underlying data. Running both would just be two processes polling
-identical `vcgencmd`/sysfs calls for equivalent checks. The rest of the
-family (`rpi-boot-config`, `rpi-connect`, `rpi-gpio-inventory`,
-`rpi-camera`) each run their own `swamp-serve-<repo>.service` on ports
-9094-9097 respectively, since none of their scheduled content overlaps
-with what this repo covers.
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
 
-Port map on this machine: `apt-inventory` 9090 · `host-health` 9091 ·
-`rpi-health` 9092 · `rpi-workflows` 9093 · `rpi-boot-config` 9094 ·
-`rpi-connect` 9095 · `rpi-gpio-inventory` 9096 · `rpi-camera` 9097.
+[Install]
+WantedBy=timers.target
+```
+
+Same pattern for `power-integrity` (`OnCalendar=*:1/5`) and
+`link-integrity` (`OnCalendar=*:2/5`) — **deliberately staggered a minute
+apart**, not all at `*:0/5`, since all three read `health-local` and
+firing simultaneously risks two separate workflow runs contending on its
+model lock. `pre-migration-snapshot` has no timer at all — manual-only,
+by design (`swamp workflow run pre-migration-snapshot`).
+
+`systemctl enable --now swamp-workflow-rpi-workflows-{thermal,power,link}-integrity.timer`.
+Verify with `systemctl list-timers 'swamp-workflow-rpi-workflows-*'`.
+
+**`rpi-cooling` and `rpi-pcie` are deliberately not scheduled at all** —
+their own checks (`stalled`, `linkDegraded`) are fully subsumed by
+`thermal-integrity`/`link-integrity` here, which read the same underlying
+data. Giving them their own timers too would just be redundant polling.
+The rest of the family (`rpi-boot-config`, `rpi-connect`,
+`rpi-gpio-inventory`, `rpi-camera`) each get their own
+`swamp-workflow-<repo>.timer`/`.service` pair the same way, since none of
+their scheduled content overlaps with what this repo covers.
+
+The one exception to all of this on the machine as a whole is
+`apt-inventory`, which keeps a persistent `swamp serve` daemon (port
+9090) — its `apt-status`/`apt-monitor` toolkit depends on the live
+WebSocket API. Nothing in this repo needs that, so it doesn't have one.
 
 ## License
 
